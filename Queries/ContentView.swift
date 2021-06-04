@@ -24,10 +24,13 @@ struct ContentView: View {
             VStack {
                 content.navigationBarTitle("Queries")
                 Spacer()
-                Button("Refresh", action: { self.vm.refresh() })
+                Button("Refresh", action: { async { await vm.refresh() } })
             }
             .onAppear {
-                vm.initializeAndRefresh()
+                async {
+                    try? await vm.initialize()
+                    await vm.refresh()
+                }
             }
             .navigationBarItems(
                 leading: Button("Filter", action: { self.isFiltering = true })
@@ -90,10 +93,13 @@ struct ContentView: View {
             }
             .navigationTitle("Add New Contact")
             .navigationBarItems(leading: Button("Cancel", action: { self.isAddingContact = false }),
-                                trailing: Button("Add", action: { self.vm.saveContacts([name]) { _ in
-                                    self.isAddingContact = false
-                                    self.vm.refresh()
-                                } }))
+                                trailing: Button("Add", action: {
+                async {
+                    _ = try? await self.vm.saveContacts([name])
+                    self.isAddingContact = false
+                    await vm.refresh()
+                }
+            }))
         }.onDisappear {
             self.name = ""
         }
@@ -114,12 +120,16 @@ struct ContentView: View {
                 self.vm.activeFilterPrefix = nil
                 self.filterPrefix = ""
                 self.isFiltering = false
-                self.vm.refresh()
+                async {
+                    await self.vm.refresh()
+                }
             }),
             trailing: Button("Filter", action: {
                 self.vm.activeFilterPrefix = filterPrefix
                 self.isFiltering = false
-                self.vm.refresh()
+                async {
+                    await self.vm.refresh()
+                }
             }))
         }
     }

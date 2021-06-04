@@ -17,10 +17,11 @@ class QueriesTests: XCTestCase {
     override func setUpWithError() throws {
         let expectation = self.expectation(description: "Expect ViewModel initialization completed")
 
-        viewModel.initialize { result in
-            expectation.fulfill()
-
-            if case .failure(let error) = result {
+        async {
+            do {
+                try await viewModel.initialize()
+                expectation.fulfill()
+            } catch {
                 XCTFail("ViewModel initialization failed: \(error)")
             }
         }
@@ -77,57 +78,24 @@ class QueriesTests: XCTestCase {
         waitForExpectations(timeout: 10)
     }
 
-    func testSavingRecords() throws {
-        let saveExpectation = expectation(description: "Expect CloudKit save operation to complete.")
-
-        try createTemporaryRecords(names: ["Madi", "Simon", "Bob"]) {
-            saveExpectation.fulfill()
-        }
-
-        waitForExpectations(timeout: 10, handler: nil)
+    func testSavingRecords() async throws {
+        try await createTemporaryRecordsAsync(names: ["Madi", "Simon", "Bob"])
     }
 
-    func testQueryingRecords() throws {
-        let saveExpectation = expectation(description: "Expect CloudKit save operation to complete.")
-        let queryExpectation = expectation(description: "Expect query operation to complete.")
+    func testQueryingRecords() async throws {
+        try await createTemporaryRecordsAsync(names: ["Madi", "Simon"])
 
-        try createTemporaryRecords(names: ["Madi", "Simon"], completionQueue: .global()) {
-            saveExpectation.fulfill()
+        Thread.sleep(forTimeInterval: 5.0)
 
-            // Query operations rely on database indexing. New records will not be indexed instantly,
-            // so wait to ensure our new record is picked up by the query.
-            Thread.sleep(forTimeInterval: 5.0)
+        let matches = try await viewModel.getContactNames(startingWith: "M")
 
-            self.viewModel.getContactNames(startingWith: "M") { result in
-                queryExpectation.fulfill()
-
-                switch result {
-                case .failure(let error):
-                    XCTFail("Error fetching filtered contacts: \(error)")
-                case .success(let names):
-                    XCTAssert(!names.isEmpty, "Query for prefix: \"M\" should return at least one record")
-                    names.forEach { XCTAssert($0.starts(with: "M"), "Received name not starting with given prefix (M): \($0)")}
-                }
-            }
-        }
-
-        waitForExpectations(timeout: 10, handler: nil)
+        XCTAssert(!matches.isEmpty, "Query for prefix: \"M\" should return at least one record")
+        matches.forEach { XCTAssert($0.starts(with: "M"), "Received name not starting with given prefix (M): \($0)")}
     }
 
     // MARK: - Test Helpers
 
-    private func createTemporaryRecords(names: [String], completionQueue: DispatchQueue = .main, completion: @escaping (() -> Void)) throws {
-        viewModel.saveContacts(names) { result in
-            switch result {
-            case .failure(let error):
-                XCTFail("Error saving records: \(error.localizedDescription)")
-            case .success(let records):
-                self.idsToDelete = records.map { $0.recordID }
-            }
-
-            completionQueue.async {
-                completion()
-            }
-        }
+    private func createTemporaryRecordsAsync(names: [String]) async throws {
+        idsToDelete = try await viewModel.saveContacts(names)
     }
 }

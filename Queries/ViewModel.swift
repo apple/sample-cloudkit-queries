@@ -6,6 +6,7 @@
 import os.log
 import CloudKit
 
+@MainActor
 final class ViewModel: ObservableObject {
 
     // MARK: - VM State
@@ -45,131 +46,90 @@ final class ViewModel: ObservableObject {
 
     private let contactsZoneID = CKRecordZone.ID(zoneName: "Contacts")
 
+    // MARK: - Init
+
+    nonisolated init() {}
+
     // MARK: - API
 
-    func initializeAndRefresh() {
-        initialize { result in
-            switch result {
-            case .failure(let error):
-                self.state = .error(error)
-            case .success:
-                self.refresh()
-            }
+    /// Initializes the CloudKit Database with a custom zone if needed.
+    func initialize() async throws {
+        do {
+            try await createContactsZoneIfNeeded()
+        } catch {
+            state = .error(error)
+            throw error
         }
     }
 
-    func initialize(completionHandler: @escaping (Result<Void, Error>) -> Void) {
-        createContactsZoneIfNeeded(completionHandler: completionHandler)
-    }
+    func refresh() async {
+        state = .loading
 
-    func refresh() {
-        self.state = .loading
-
-        getContactNames(startingWith: activeFilterPrefix) { result in
-            switch result {
-            case .failure(let error):
-                self.state = .error(error)
-            case .success(let names):
-                self.state = .loaded(names: names, prefix: self.activeFilterPrefix)
-            }
+        do {
+            let names = try await getContactNames(startingWith: activeFilterPrefix)
+            state = .loaded(names: names, prefix: activeFilterPrefix)
+        } catch {
+            state = .error(error)
         }
     }
 
     /// Saves a set of names to our private database as Contact records.
-    /// - Parameters:
-    ///   - contactNames: A list of names representing contacts to save to the database.
-    ///   - completionQueue: The [DispatchQueue](https://developer.apple.com/documentation/dispatch/dispatchqueue) on which the completion handler will be called. Defaults to `main`.
-    ///   - completionHandler: Handler called on operation completion with success or failure.
-    func saveContacts(_ contactNames: [String], completionQueue: DispatchQueue = .main, completionHandler: @escaping (Result<[CKRecord], Error>) -> Void) {
+    /// - Parameter names: A list of names representing contacts to save to the database.
+    /// - Returns: The set of newly created record IDs after saving.
+    func saveContacts(_ names: [String]) async throws -> [CKRecord.ID] {
         /// Convert our strings (names) to `CKRecord` objects with our helper function.
-        let records = contactNames.map { createContactRecord(forName: $0) }
+        let records = names.map { createContactRecord(forName: $0) }
 
-        let saveOperation = CKModifyRecordsOperation(recordsToSave: records)
-        saveOperation.savePolicy = .allKeys
+        let result = try await database.modifyRecords(saving: records, savePolicy: .allKeys)
 
-        var recordsSaved: [CKRecord] = []
-
-        saveOperation.perRecordSaveBlock = { id, result in
-            if let record = try? result.get() {
-                recordsSaved.append(record)
-            }
-        }
-
-        saveOperation.modifyRecordsResultBlock = { result in
-            if case .failure(let error) = result {
-                self.reportError(error)
-            }
-
-            completionQueue.async {
-                completionHandler(result.map { recordsSaved })
-            }
-        }
-
-        database.add(saveOperation)
+        // Determine successfully saved records via inner Results.
+        let savedRecords = result.saveResults.values.compactMap { try? $0.get() }
+        return savedRecords.map { $0.recordID }
     }
 
     /// Retrieves names of Contacts from the database with an optional **case-sensitive** prefix to query with.
     /// - Parameters:
     ///   - prefix: Prefix to query names against.
-    ///   - completionQueue: The [DispatchQueue](https://developer.apple.com/documentation/dispatch/dispatchqueue) on which the completion handler will be called. Defaults to `main`.
-    ///   - completionHandler: Handler called on operation completion with success (array of names) or failure.
-    func getContactNames(startingWith prefix: String?, completionQueue: DispatchQueue = .main, completionHandler: @escaping (Result<[String], Error>) -> Void) {
+    /// - Returns: Names from the database matching the prefix query.
+    func getContactNames(startingWith prefix: String?) async throws -> [String] {
         guard let prefix = prefix else {
-            getAllContactNames(completionQueue: completionQueue, completionHandler: completionHandler)
-            return
+            return try await getAllContactNames()
         }
 
         let predicate = NSPredicate(format: "name BEGINSWITH %@", prefix)
-
-        // Using CKQueryOperation, the records will come in via the closure one at a time.
-        // Store results in a temporary array for returning after completion.
-        var fetchedNames: [String] = []
-
         let query = CKQuery(recordType: "Contact", predicate: predicate)
-        let queryOperation = CKQueryOperation(query: query)
-        queryOperation.zoneID = contactsZoneID
+        let (matchResults, _) = try await database.records(matching: query, inZoneWith: contactsZoneID)
 
-        queryOperation.recordMatchedBlock = { _, result in
-            if let record = try? result.get(), let name = record["name"] as? String {
-                fetchedNames.append(name)
-            }
-        }
+        let names = matchResults
+            .compactMap { _, result in try? result.get() }
+            .compactMap { $0["name"] as? String }
 
-        queryOperation.queryResultBlock = { result in
-            if case .failure(let error) = result {
-                self.reportError(error)
-            }
-
-            completionQueue.async {
-                completionHandler(result.map { _ in fetchedNames })
-            }
-        }
-
-        database.add(queryOperation)
+        return names
     }
 
     /// Fetches _all_ contact names from the database.
-    /// - Parameters:
-    ///   - completionQueue: The [DispatchQueue](https://developer.apple.com/documentation/dispatch/dispatchqueue) on which the completion handler will be called. Defaults to `main`.
-    ///   - completionHandler: Handler called on operation completion with success (array of names) or failure.
-    func getAllContactNames(completionQueue: DispatchQueue = .main, completionHandler: @escaping (Result<[String], Error>) -> Void) {
-        var fetchedNames: [String] = []
+    /// - Returns: All names found in our custom zone.
+    func getAllContactNames() async throws -> [String] {
+        var allContactNames: [String] = []
 
-        let fetchOperation = CKFetchRecordZoneChangesOperation(recordZoneIDs: [contactsZoneID], configurationsByRecordZoneID: nil)
+        /// `recordZoneChanges` can return multiple consecutive changesets before completing, so
+        /// we use a loop to process multiple results if needed, indicated by the `moreComing` flag.
+        var awaitingChanges = true
+        /// After each loop, if more changes are coming, they are retrieved by using the `changeToken` property.
+        var nextChangeToken: CKServerChangeToken? = nil
 
-        fetchOperation.recordWasChangedBlock = { _, result in
-            if let record = try? result.get(), let name = record["name"] as? String {
-                fetchedNames.append(name)
-            }
+        while awaitingChanges {
+            let changes = try await database.recordZoneChanges(inZoneWith: contactsZoneID, since: nextChangeToken)
+            let contactNames = changes.modificationResultsByID
+                .compactMap { _, result in try? result.get().record }
+                .compactMap { $0["name"] as? String }
+            allContactNames.append(contentsOf: contactNames)
+
+            awaitingChanges = changes.moreComing
+            nextChangeToken = changes.changeToken
         }
 
-        fetchOperation.fetchRecordZoneChangesResultBlock = { result in
-            completionQueue.async {
-                completionHandler(result.map { fetchedNames })
-            }
-        }
-
-        database.add(fetchOperation)
+        return allContactNames
     }
 
     // MARK: - Helpers
@@ -181,34 +141,18 @@ final class ViewModel: ObservableObject {
         return record
     }
 
+
     /// Creates a custom CKRecordZone and saves it to the database if needed,
     /// checking `UserDefaults` if this has been done before on this device.
-    /// - Parameter completionQueue: Queue to run completion handler on.
-    /// - Parameter completionHandler: Handler to process `success` or `failure`.
-    private func createContactsZoneIfNeeded(completionQueue: DispatchQueue = .main, completionHandler: @escaping (Result<Void, Error>) -> Void) {
+    private func createContactsZoneIfNeeded() async throws {
         guard !UserDefaults.standard.bool(forKey: "contactZoneCreated") else {
-            completionHandler(.success(()))
             return
         }
 
         let newZone = CKRecordZone(zoneID: contactsZoneID)
-        let createZoneOperation = CKModifyRecordZonesOperation(recordZonesToSave: [newZone])
+        _ = try await database.modifyRecordZones(saving: [newZone])
 
-        createZoneOperation.modifyRecordZonesResultBlock = { result in
-            switch result {
-            case .failure(let error):
-                self.reportError(error)
-
-            case .success:
-                UserDefaults.standard.set(true, forKey: "contactZoneCreated")
-            }
-
-            completionQueue.async {
-                completionHandler(result)
-            }
-        }
-
-        database.add(createZoneOperation)
+        UserDefaults.standard.set(true, forKey: "contactZoneCreated")
     }
 
     private func reportError(_ error: Error) {
