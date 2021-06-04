@@ -80,21 +80,28 @@ final class ViewModel: ObservableObject {
     ///   - contactNames: A list of names representing contacts to save to the database.
     ///   - completionQueue: The [DispatchQueue](https://developer.apple.com/documentation/dispatch/dispatchqueue) on which the completion handler will be called. Defaults to `main`.
     ///   - completionHandler: Handler called on operation completion with success or failure.
-    func saveContacts(_ contactNames: [String], completionQueue: DispatchQueue = .main, completionHandler: @escaping (Result<[CKRecord]?, Error>) -> Void) {
+    func saveContacts(_ contactNames: [String], completionQueue: DispatchQueue = .main, completionHandler: @escaping (Result<[CKRecord], Error>) -> Void) {
         /// Convert our strings (names) to `CKRecord` objects with our helper function.
         let records = contactNames.map { createContactRecord(forName: $0) }
 
         let saveOperation = CKModifyRecordsOperation(recordsToSave: records)
         saveOperation.savePolicy = .allKeys
 
-        saveOperation.modifyRecordsCompletionBlock = { recordsSaved, _, error in
+        var recordsSaved: [CKRecord] = []
+
+        saveOperation.perRecordSaveBlock = { id, result in
+            if let record = try? result.get() {
+                recordsSaved.append(record)
+            }
+        }
+
+        saveOperation.modifyRecordsResultBlock = { result in
+            if case .failure(let error) = result {
+                self.reportError(error)
+            }
+
             completionQueue.async {
-                if let error = error {
-                    self.reportError(error)
-                    completionHandler(.failure(error))
-                } else {
-                    completionHandler(.success(recordsSaved))
-                }
+                completionHandler(result.map { recordsSaved })
             }
         }
 
@@ -122,20 +129,19 @@ final class ViewModel: ObservableObject {
         let queryOperation = CKQueryOperation(query: query)
         queryOperation.zoneID = contactsZoneID
 
-        queryOperation.recordFetchedBlock = { record in
-            if let name = record["name"] as? String {
+        queryOperation.recordMatchedBlock = { _, result in
+            if let record = try? result.get(), let name = record["name"] as? String {
                 fetchedNames.append(name)
             }
         }
 
-        queryOperation.queryCompletionBlock = { _, error in
+        queryOperation.queryResultBlock = { result in
+            if case .failure(let error) = result {
+                self.reportError(error)
+            }
+
             completionQueue.async {
-                if let error = error {
-                    self.reportError(error)
-                    completionHandler(.failure(error))
-                } else {
-                    completionHandler(.success(fetchedNames))
-                }
+                completionHandler(result.map { _ in fetchedNames })
             }
         }
 
@@ -151,19 +157,15 @@ final class ViewModel: ObservableObject {
 
         let fetchOperation = CKFetchRecordZoneChangesOperation(recordZoneIDs: [contactsZoneID], configurationsByRecordZoneID: nil)
 
-        fetchOperation.recordChangedBlock = { record in
-            if let name = record["name"] as? String {
+        fetchOperation.recordWasChangedBlock = { _, result in
+            if let record = try? result.get(), let name = record["name"] as? String {
                 fetchedNames.append(name)
             }
         }
 
-        fetchOperation.recordZoneFetchCompletionBlock = { _, _, _, _, error in
+        fetchOperation.fetchRecordZoneChangesResultBlock = { result in
             completionQueue.async {
-                if let error = error {
-                    completionHandler(.failure(error))
-                } else {
-                    completionHandler(.success(fetchedNames))
-                }
+                completionHandler(result.map { fetchedNames })
             }
         }
 
@@ -192,13 +194,17 @@ final class ViewModel: ObservableObject {
         let newZone = CKRecordZone(zoneID: contactsZoneID)
         let createZoneOperation = CKModifyRecordZonesOperation(recordZonesToSave: [newZone])
 
-        createZoneOperation.modifyRecordZonesCompletionBlock = { _, _, error in
-            if let error = error {
-                completionHandler(.failure(error))
-            } else {
-                UserDefaults.standard.set(true, forKey: "contactZoneCreated")
+        createZoneOperation.modifyRecordZonesResultBlock = { result in
+            switch result {
+            case .failure(let error):
+                self.reportError(error)
 
-                completionHandler(.success(()))
+            case .success:
+                UserDefaults.standard.set(true, forKey: "contactZoneCreated")
+            }
+
+            completionQueue.async {
+                completionHandler(result)
             }
         }
 

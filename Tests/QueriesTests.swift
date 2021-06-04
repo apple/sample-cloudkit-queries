@@ -35,16 +35,15 @@ class QueriesTests: XCTestCase {
             let deleteExpectation = expectation(description: "Expect CloudKit to delete testing records")
 
             let deleteOperation = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: idsToDelete)
-            deleteOperation.modifyRecordsCompletionBlock = { _, idsDeleted, error in
+
+            deleteOperation.modifyRecordsResultBlock = { result in
                 deleteExpectation.fulfill()
 
-                if let error = error {
+                if case .failure(let error) = result {
                     XCTFail("Error deleting temporary IDs: \(error.localizedDescription)")
                 } else {
-                    XCTAssert(idsDeleted == self.idsToDelete, "IDs deleted did not match targeted IDs for deletion.")
+                    self.idsToDelete = []
                 }
-
-                self.idsToDelete = []
             }
 
             database.add(deleteOperation)
@@ -123,9 +122,7 @@ class QueriesTests: XCTestCase {
             case .failure(let error):
                 XCTFail("Error saving records: \(error.localizedDescription)")
             case .success(let records):
-                if let records = records {
-                    self.idsToDelete = records.map { $0.recordID }
-                }
+                self.idsToDelete = records.map { $0.recordID }
             }
 
             completionQueue.async {
