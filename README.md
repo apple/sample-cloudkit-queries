@@ -6,7 +6,7 @@ This project demonstrates use of CloudKit queries against a CloudKit Private Dat
 
 ### Prerequisites
 
-* A Mac with [Xcode 12](https://developer.apple.com/xcode/) (or later) installed is required to build and test this project.
+* A Mac with [Xcode 13](https://developer.apple.com/xcode/) (or later) installed is required to build and test this project.
 * An [Apple Developer Program membership](https://developer.apple.com/support/compare-memberships/) is needed if you wish to create your own CloudKit container.
 
 ### Setup Steps
@@ -30,6 +30,10 @@ This project demonstrates use of CloudKit queries against a CloudKit Private Dat
 * How to create new records with the `CKModifyRecordsOperation`.
 * How to use `CKQuery` and `CKQueryOperation` to build a query matching all or specific records, and retrieve and process the results with a `recordFetchedBlock`.
 * How to use the `Result` type to provide clear information about the result of asynchronous operations with completion handlers.
+
+### Note on Swift Concurrency
+
+This project uses Swift concurrency APIs. A prior `completionHandler`-based implementation has been tagged [`pre-async`](https://github.com/apple/cloudkit-sample-queries/tree/pre-async).
 
 ### Further Reading
 
