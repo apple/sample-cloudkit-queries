@@ -17,7 +17,7 @@ class QueriesTests: XCTestCase {
     override func setUpWithError() throws {
         let expectation = self.expectation(description: "Expect ViewModel initialization completed")
 
-        async {
+        Task {
             do {
                 try await viewModel.initialize()
                 expectation.fulfill()

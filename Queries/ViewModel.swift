@@ -80,7 +80,7 @@ final class ViewModel: ObservableObject {
         /// Convert our strings (names) to `CKRecord` objects with our helper function.
         let records = names.map { createContactRecord(forName: $0) }
 
-        let result = try await database.modifyRecords(saving: records, savePolicy: .allKeys)
+        let result = try await database.modifyRecords(saving: records, deleting: [], savePolicy: .allKeys)
 
         // Determine successfully saved records via inner Results.
         let savedRecords = result.saveResults.values.compactMap { try? $0.get() }
@@ -150,7 +150,7 @@ final class ViewModel: ObservableObject {
         }
 
         let newZone = CKRecordZone(zoneID: contactsZoneID)
-        _ = try await database.modifyRecordZones(saving: [newZone])
+        _ = try await database.modifyRecordZones(saving: [newZone], deleting: [])
 
         UserDefaults.standard.set(true, forKey: "contactZoneCreated")
     }

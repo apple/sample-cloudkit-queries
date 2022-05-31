@@ -24,10 +24,10 @@ struct ContentView: View {
             VStack {
                 content.navigationBarTitle("Queries")
                 Spacer()
-                Button("Refresh", action: { async { await vm.refresh() } })
+                Button("Refresh", action: { Task { await vm.refresh() } })
             }
             .onAppear {
-                async {
+                Task {
                     try? await vm.initialize()
                     await vm.refresh()
                 }
@@ -94,7 +94,7 @@ struct ContentView: View {
             .navigationTitle("Add New Contact")
             .navigationBarItems(leading: Button("Cancel", action: { self.isAddingContact = false }),
                                 trailing: Button("Add", action: {
-                async {
+                Task {
                     _ = try? await self.vm.saveContacts([name])
                     self.isAddingContact = false
                     await vm.refresh()
@@ -120,14 +120,14 @@ struct ContentView: View {
                 self.vm.activeFilterPrefix = nil
                 self.filterPrefix = ""
                 self.isFiltering = false
-                async {
+                Task {
                     await self.vm.refresh()
                 }
             }),
             trailing: Button("Filter", action: {
                 self.vm.activeFilterPrefix = filterPrefix
                 self.isFiltering = false
-                async {
+                Task {
                     await self.vm.refresh()
                 }
             }))
