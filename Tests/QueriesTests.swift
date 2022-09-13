@@ -85,8 +85,8 @@ class QueriesTests: XCTestCase {
     func testQueryingRecords() async throws {
         try await createTemporaryRecordsAsync(names: ["Madi", "Simon"])
 
-        Thread.sleep(forTimeInterval: 5.0)
-
+        try? await Task.sleep(nanoseconds: 5000000000)
+        
         let matches = try await viewModel.getContactNames(startingWith: "M")
 
         XCTAssert(!matches.isEmpty, "Query for prefix: \"M\" should return at least one record")
